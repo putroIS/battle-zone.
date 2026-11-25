@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Battle Zone - Game Perang</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #101820; color: #fff;
+    font-family: Arial, Helvetica, sans-serif; display: flex;
+    min-height: 100vh; align-items: center; justify-content: center;
+    padding: 16px;
+  }
+  .game-wrap { width: min(960px, 100%); text-align: center; }
+  h1 { margin: 0 0 8px; letter-spacing: 3px; color: #f5c542; }
+  .sub { color: #b8c4cc; margin: 0 0 14px; font-size: 14px; }
+  .hud {
+    display: flex; justify-content: space-between; gap: 10px;
+    background: #1c2b36; padding: 10px 14px; border-radius: 10px 10px 0 0;
+    font-weight: bold; flex-wrap: wrap;
+  }
+  canvas {
+    display: block; width: 100%; height: auto; background: #263b32;
+    border: 2px solid #536b5c; touch-action: none;
+  }
+  .controls {
+    display: flex; justify-content: center; gap: 10px; flex-wrap: wrap;
+    margin-top: 12px;
+  }
+  button {
+    border: 0; border-radius: 9px; padding: 12px 18px;
+    background: #f5c542; color: #18212a; font-weight: bold;
+    cursor: pointer; font-size: 15px;
+  }
+  button.secondary { background: #344957; color: white; }
+  .help { color: #c3cdd2; font-size: 13px; line-height: 1.6; }
+  .touch-pad { display: none; margin: 12px auto 0; width: 210px; }
+  .touch-row { display: flex; justify-content: center; gap: 8px; margin: 5px; }
+  .touch-pad button { width: 62px; height: 48px; padding: 0; font-size: 20px; }
+  @media (pointer: coarse) { .touch-pad { display: block; } }
+</style>
+</head>
+<body>
+<div class="game-wrap">
+  <h1>⚔ BATTLE ZONE</h1>
+  <p class="sub">Bertahan hidup, kalahkan pasukan musuh, dan raih skor tertinggi!</p>
+  <div class="hud">
+    <span>❤️ Nyawa: <b id="lives">3</b></span>
+    <span>★ Skor: <b id="score">0</b></span>
+    <span>Gelombang: <b id="wave">1</b></span>
+  </div>
+  <canvas id="game" width="900" height="520" aria-label="Area permainan Battle Zone"></canvas>
+  <div class="controls">
+    <button id="startBtn">Mulai / Ulangi</button>
+    <button id="pauseBtn" class="secondary">Jeda</button>
+  </div>
+  <div class="touch-pad" aria-label="Kontrol layar sentuh">
+    <div class="touch-row"><button data-key="ArrowUp">▲</button></div>
+    <div class="touch-row">
+      <button data-key="ArrowLeft">◀</button>
+      <button data-key="Space">●</button>
+      <button data-key="ArrowRight">▶</button>
+    </div>
+    <div class="touch-row"><button data-key="ArrowDown">▼</button></div>
+  </div>
+  <p class="help">
+    Kontrol komputer: WASD / tombol panah untuk bergerak, SPACE untuk menembak.<br>
+    HP: gunakan tombol arah dan tombol ● untuk menembak. Tembakan mengarah ke musuh terdekat.
+  </p>
+</div>
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const scoreEl = document.getElementById('score');
+  const livesEl = document.getElementById('lives');
+  const waveEl = document.getElementById('wave');
+  const keys = {};
+  let player, bullets, enemies, particles, score, lives, wave, running, paused;
+  let spawnTimer = 0, lastTime = 0, shootCooldown = 0;
+  const W = canvas.width, H = canvas.height;
+
+  function reset() {
+    player = { x: W/2, y: H/2, r: 15, speed: 245 };
+    bullets = []; enemies = []; particles = [];
+    score = 0; lives = 3; wave = 1;
+    spawnTimer = 0; shootCooldown = 0; running = true; paused = false;
+    updateHud();
+  }
+  function updateHud() {
+    scoreEl.textContent = score;
+    livesEl.textContent = lives;
+    waveEl.textContent = wave;
+  }
+  function spawnEnemy() {
+    const side = Math.floor(Math.random() * 4);
+    let x = side === 0 ? -25 : side === 1 ? W+25 : Math.random()*W;
+    let y = side === 2 ? -25 : side === 3 ? H+25 : Math.random()*H;
+    const hp = Math.min(3, 1 + Math.floor(wave/4));
+    enemies.push({ x, y, r: 13 + Math.min(7, wave), hp, maxHp: hp,
+      speed: 58 + wave*5 + Math.random()*22, hit: 0 });
+  }
+  function nearestEnemy() {
+    let target = null, best = Infinity;
+    for (const e of enemies) {
+      const d = Math.hypot(e.x-player.x, e.y-player.y);
+      if (d < best) { best = d; target = e; }
+    }
+    return target;
+  }
+  function shoot() {
+    const target = nearestEnemy();
+    if (!target) return;
+    const dx = target.x-player.x, dy = target.y-player.y;
+    const d = Math.hypot(dx,dy) || 1;
+    bullets.push({ x: player.x, y: player.y, vx: dx/d*470, vy: dy/d*470, life: 1.5 });
+  }
+  function burst(x,y,color,count=8) {
+    for(let i=0;i<count;i++){
+      const a=Math.random()*Math.PI*2, s=40+Math.random()*150;
+      particles.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:.35+Math.random()*.35,color});
+    }
+  }
+  function update(dt) {
+    if (!running || paused) return;
+    let dx=0, dy=0;
+    if(keys.ArrowLeft||keys.a||keys.A) dx--;
+    if(keys.ArrowRight||keys.d||keys.D) dx++;
+    if(keys.ArrowUp||keys.w||keys.W) dy--;
+    if(keys.ArrowDown||keys.s||keys.S) dy++;
+    const mag=Math.hypot(dx,dy)||1;
+    player.x=Math.max(player.r,Math.min(W-player.r,player.x+dx/mag*player.speed*dt));
+    player.y=Math.max(player.r,Math.min(H-player.r,player.y+dy/mag*player.speed*dt));
+
+    shootCooldown-=dt;
+    if((keys.Space||keys[' ']) && shootCooldown<=0){shoot();shootCooldown=.22;}
+
+    spawnTimer-=dt;
+    if(spawnTimer<=0){spawnEnemy();spawnTimer=Math.max(.35,1.25-wave*.055);}
+    if(score>0 && score>=wave*120) { wave++; updateHud(); }
+
+    for(const b of bullets){
+      b.x+=b.vx*dt; b.y+=b.vy*dt; b.life-=dt;
+    }
+    bullets=bullets.filter(b=>b.life>0&&b.x>-20&&b.x<W+20&&b.y>-20&&b.y<H+20);
+
+    for(const e of enemies){
+      const vx=player.x-e.x, vy=player.y-e.y, d=Math.hypot(vx,vy)||1;
+      e.x+=vx/d*e.speed*dt; e.y+=vy/d*e.speed*dt;
+      if(e.hit>0)e.hit-=dt;
+      if(d<e.r+player.r){
+        lives--; updateHud(); burst(player.x,player.y,'#68d8ff',14);
+        e.x += (e.x-player.x)/d*35; e.y += (e.y-player.y)/d*35;
+        if(lives<=0){running=false;}
+      }
+    }
+    for(let i=enemies.length-1;i>=0;i--){
+      const e=enemies[i];
+      for(let j=bullets.length-1;j>=0;j--){
+        const b=bullets[j];
+        if(Math.hypot(e.x-b.x,e.y-b.y)<e.r+5){
+          bullets.splice(j,1); e.hp--; e.hit=.08;
+          burst(b.x,b.y,'#ffd166',3);
+          if(e.hp<=0){burst(e.x,e.y,'#ff7043',12);enemies.splice(i,1);score+=10;updateHud();}
+          break;
+        }
+      }
+    }
+    for(const p of particles){p.x+=p.vx*dt;p.y+=p.vy*dt;p.life-=dt;p.vx*=.97;p.vy*=.97;}
+    particles=particles.filter(p=>p.life>0);
+  }
+  function draw() {
+    ctx.fillStyle='#263b32';ctx.fillRect(0,0,W,H);
+    // subtle battlefield grid
+    ctx.strokeStyle='rgba(220,235,210,.07)';ctx.lineWidth=1;
+    for(let x=0;x<W;x+=40){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();}
+    for(let y=0;y<H;y+=40){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}
+    // scattered terrain
+    for(let i=0;i<18;i++){
+      const x=(i*173+47)%W,y=(i*97+31)%H;
+      ctx.fillStyle='rgba(10,25,20,.16)';ctx.beginPath();ctx.arc(x,y,8+(i%4)*3,0,Math.PI*2);ctx.fill();
+    }
+    for(const b of bullets){
+      ctx.fillStyle='#ffe082';ctx.beginPath();ctx.arc(b.x,b.y,5,0,Math.PI*2);ctx.fill();
+      ctx.shadowColor='#ffca28';ctx.shadowBlur=10;ctx.fill();ctx.shadowBlur=0;
+    }
+    for(const e of enemies){
+      ctx.fillStyle=e.hit>0?'#fff':'#d94b45';
+      ctx.beginPath();ctx.arc(e.x,e.y,e.r,0,Math.PI*2);ctx.fill();
+      ctx.fillStyle='#321d1b';ctx.fillRect(e.x-5,e.y-3,3,3);ctx.fillRect(e.x+3,e.y-3,3,3);
+      ctx.fillStyle='#222';ctx.fillRect(e.x-e.r,e.y-e.r-8,e.r*2,4);
+      ctx.fillStyle='#8ee06b';ctx.fillRect(e.x-e.r,e.y-e.r-8,e.r*2*(e.hp/e.maxHp),4);
+    }
+    // player soldier
+    ctx.fillStyle='#55b8e8';ctx.beginPath();ctx.arc(player.x,player.y,player.r,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#17384b';ctx.beginPath();ctx.arc(player.x,player.y-3,7,Math.PI,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#d7f3ff';ctx.beginPath();ctx.arc(player.x,player.y,3,0,Math.PI*2);ctx.fill();
+    for(const p of particles){ctx.globalAlpha=Math.max(0,p.life*2);ctx.fillStyle=p.color;ctx.fillRect(p.x,p.y,4,4);ctx.globalAlpha=1;}
+    if(!running || paused){
+      ctx.fillStyle='rgba(0,0,0,.62)';ctx.fillRect(0,0,W,H);
+      ctx.textAlign='center';ctx.fillStyle='#fff';ctx.font='bold 42px Arial';
+      ctx.fillText(!running?'MISI GAGAL':'DIJEDA',W/2,H/2-8);
+      ctx.font='20px Arial';ctx.fillStyle='#f5c542';
+      ctx.fillText(!running?'Tekan Mulai / Ulangi untuk bermain lagi':'Tekan Jeda untuk melanjutkan',W/2,H/2+32);
+    }
+  }
+  function loop(t){
+    const dt=Math.min((t-lastTime)/1000||0,0.035);lastTime=t;
+    update(dt);draw();requestAnimationFrame(loop);
+  }
+  document.addEventListener('keydown',e=>{
+    if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code))e.preventDefault();
+    keys[e.code==='Space'?'Space':e.key]=true;
+    if(e.code==='Space')keys.Space=true;
+  });
+  document.addEventListener('keyup',e=>{
+    keys[e.code==='Space'?'Space':e.key]=false;
+    if(e.code==='Space')keys.Space=false;
+  });
+  document.getElementById('startBtn').addEventListener('click',reset);
+  document.getElementById('pauseBtn').addEventListener('click',()=>{if(running)paused=!paused;});
+  document.querySelectorAll('[data-key]').forEach(btn=>{
+    const key=btn.dataset.key;
+    const down=e=>{e.preventDefault();keys[key]=true;};
+    const up=e=>{e.preventDefault();keys[key]=false;};
+    btn.addEventListener('pointerdown',down);
+    btn.addEventListener('pointerup',up);
+    btn.addEventListener('pointerleave',up);
+    btn.addEventListener('pointercancel',up);
+  });
+  reset();requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
